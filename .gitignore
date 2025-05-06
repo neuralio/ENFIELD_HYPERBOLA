@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.egg-info/
+*.egg
+*.pkl
+*.pth
+*.npy
+*.log
+*.tif
+test.py
+log/
+data/
+
