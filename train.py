@@ -122,20 +122,20 @@ def train_model(train_dataset,
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # If encounter error with pin memory change it for hybrid4
     if model_name == 'HybridModel_4':
         my_collate_fn_train = collate_fn_graph
         my_collate_fn_val = collate_fn_graph
-        PIN_MEMORY = False
+        #PIN_MEMORY = False
     else:
         my_collate_fn_train = collate_fn_mixup if APPLY_MIXUP else collate_fn
         my_collate_fn_val = collate_fn 
-        PIN_MEMORY = True
+        #PIN_MEMORY = True
 
-           
     train_loader = DataLoader(train_dataset, 
                               batch_size=batch_size, 
                               shuffle=True,
-                              pin_memory=PIN_MEMORY,
+                              pin_memory=True,#PIN_MEMORY
                               persistent_workers=True,
                               num_workers=NUM_WORKERS,
                               drop_last=True,
@@ -145,16 +145,12 @@ def train_model(train_dataset,
     val_loader = DataLoader(val_dataset, 
                             batch_size=batch_size, 
                             shuffle=False,
-                            pin_memory=PIN_MEMORY,
+                            pin_memory=True,#PIN_MEMORY
                             persistent_workers=True,
                             num_workers=NUM_WORKERS,
                             drop_last=True,
                             prefetch_factor=PREFETCH_FACTOR,
                             collate_fn=my_collate_fn_val)
-
-    # Compile the model for performance optimization
-    # (does not work with graphs)
-    #model = torch.compile(model)
 
     if model_name == 'HybridModel_4':
         # Dummy forward pass for initialization
@@ -191,19 +187,6 @@ def train_model(train_dataset,
     # Enable channels_last memory format
     model = model.to(memory_format=torch.channels_last)
 
-    # --- Register hooks on your model branches ---
-    # Create a dictionary to hold activations.
-    # activations = {}
-
-    # def get_activation(name):
-    #     def hook(model, input, output):
-    #         activations[name] = output.detach().cpu()
-    #     return hook
-
-    # # Assuming your model has attributes `cnn_branch` and `vit_branch`
-    # model.cnn_branch.register_forward_hook(get_activation("cnn_feat"))
-    # model.vit_branch.register_forward_hook(get_activation("vit_feat"))
-
     if model_name == 'HybridModel_4':
         optimizer = torch.optim.AdamW(
             [
@@ -232,8 +215,6 @@ def train_model(train_dataset,
                                                            factor=SCHEDULER_FACTOR,
                                                            patience=SCHEDULER_PATIENCE,
                                                            min_lr=1e-6)
-
-
     train_losses = []
     train_ious = []
     train_dices = []
@@ -357,17 +338,6 @@ def train_model(train_dataset,
                     # Apply gradient clipping before optimizer step
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
-
-            # Visualize feature maps from the CNN and ViT branches on the first batch every 5 epochs.
-            #if epoch % 5 == 0 and i == 0:
-            # if epoch == 0 and i == 0:
-            #     # Use the activations stored by the hooks.
-            #     if "cnn_feat" in activations:
-            #         # Visualize feature maps for the first sample in the batch.
-            #         visualize_feature_maps(activations["cnn_feat"][0], f"CNN Feature Maps - Epoch {epoch}")
-            #     if "vit_feat" in activations:
-            #         visualize_feature_maps(activations["vit_feat"][0], f"ViT Feature Maps - Epoch {epoch}")
-        
 
             # Upsample outputs if needed to match the label dimensions
             #if outputs.shape[2:] != labels.shape[1:]:
@@ -540,6 +510,7 @@ def train_model(train_dataset,
         
         # Step scheduler based on validation loss
         scheduler.step(val_loss)
+        #scheduler.step()
         logging.info(f"Epoch {epoch+1}: Learning rate -> {scheduler.get_last_lr()}")
 
         # Early stopping 
@@ -547,55 +518,64 @@ def train_model(train_dataset,
             best_val_loss = val_loss
             early_stop_counter = 0       
             # Global pruning
-            parameters_to_prune = []
+            # Traverse model and collect all Conv2d and Linear 
+            # Prune only once!
+            if epoch == 0:
+                for name, module in model.named_modules():
+                    if isinstance(module, torch.nn.Conv2d):
+                        # Ensure the tensor is contiguous before pruning (good practice)
+                        module.weight.data = module.weight.data.contiguous()
+                        # Apply structured pruning: prune 20% of output filters (dim=0)
+                        prune.ln_structured(
+                            module,
+                            name='weight',
+                            amount=0.2,
+                            n=2,  # L2 norm
+                            dim=0  # Prune entire output filters
+                        )
 
-            # Traverse model and collect all Conv2d and Linear layers
-            for name, module in model.named_modules():
-                if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-                    #print(f"Adding {name} to global pruning list")
-                    # Ensure the tensor is contiguous before pruning
-                    module.weight.data = module.weight.data.contiguous()
-                    parameters_to_prune.append((module, 'weight'))
+                    elif isinstance(module, torch.nn.Linear):
+                        module.weight.data = module.weight.data.contiguous()
+                        # Apply structured pruning: prune 20% of neurons (input connections)
+                        prune.ln_structured(
+                            module,
+                            name='weight',
+                            amount=0.2,
+                            n=2,  # L2 norm
+                            dim=1  # Prune entire neurons (columns)
+                        )
 
-            # Apply pruning (e.g., 20% of weights in Conv2d and Linear layers)
-            prune.global_unstructured(
-                parameters_to_prune,
-                pruning_method=prune.L1Unstructured,
-                amount=0.2,
-            )
-
-            # # Check pruning masks
-            # for module, _ in parameters_to_prune:
-            #     print(dict(module.named_buffers()))  # should include 'weight_mask'
-
-
-            named_module_dict = dict(model.named_modules())
-            for module, param_name in parameters_to_prune:
-                # Try to find module name
-                module_name = next((name for name, mod in named_module_dict.items() if mod is module), "unknown")
-                tensor = getattr(module, param_name)
-                sparsity = 100.0 * float(torch.sum(tensor == 0)) / float(tensor.nelement())
-                #print(f"Sparsity in {module_name}.{param_name}: {sparsity:.2f}%")
-
-
-            # Show global sparsity
-            total_zeros = 0
-            total_elements = 0
-
-            for module, param_name in parameters_to_prune:
-                tensor = getattr(module, param_name)
-                total_zeros += torch.sum(tensor == 0).item()
-                total_elements += tensor.nelement()
-
-            global_sparsity = 100.0 * total_zeros / total_elements
-
-            print(f"Global sparsity: {global_sparsity:.2f}%")
+                named_module_dict = dict(model.named_modules())
+                for name, module in named_module_dict.items():
+                    if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+                        if hasattr(module, 'weight'):
+                            tensor = module.weight
+                            sparsity = 100.0 * float(torch.sum(tensor == 0)) / float(tensor.nelement())
+                            #print(f"Sparsity in {name}.weight: {sparsity:.2f}%")
 
 
-            # Make pruning permantly
-            # replace the reparameterized weight with the pruned one directly
-            for module, param_name in parameters_to_prune:
-                prune.remove(module, param_name)
+                # Show global sparsity
+                total_zeros = 0
+                total_elements = 0
+
+                for name, module in named_module_dict.items():
+                    if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+                        if hasattr(module, 'weight'):
+                            tensor = module.weight
+                            total_zeros += torch.sum(tensor == 0).item()
+                            total_elements += tensor.nelement()
+
+                global_sparsity = 100.0 * total_zeros / total_elements
+
+                print(f"Global sparsity: {global_sparsity:.2f}%")
+
+
+                # Make pruning permantly
+                # replace the reparameterized weight with the pruned one directly
+                for name, module in named_module_dict.items():
+                    if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+                        if hasattr(module, 'weight_orig'):
+                            prune.remove(module, 'weight')
 
             # Save best model
             torch.save(model.state_dict(), OUTPUT_DIR + f"{model_name}_best.pth")

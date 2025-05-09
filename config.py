@@ -1,8 +1,8 @@
 from models import HybridModel_1, HybridModel_2, HybridModel_3, HybridModel_4
 
-BASE_PATH = '/home/ggous/Documents/Hyperspectral_internet/1-DATA WITH GROUND-TRUTH LABELS/'
-TEST_PATH = '/home/ggous/Documents/TEST_DATA/'
-OUTPUT_DIR = './saved_data/'
+BASE_PATH = './data'
+TEST_PATH = './test_data'
+OUTPUT_DIR = './saved_data'
 
 BATCH_SIZE = 32
 WEIGHT_DECAY = 1e-3

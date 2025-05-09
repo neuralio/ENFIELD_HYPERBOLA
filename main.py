@@ -6,7 +6,7 @@ from utils import SplitPatchDataDataset, calculate_class_weights
 from train import train_multiple_models
 from kfold_training import train_with_kfold
 from rich import print
-from config import BASE_PATH, BATCH_SIZE, NB_CLASSES, \
+from config import BASE_PATH, TEST_PATH, BATCH_SIZE, NB_CLASSES, \
     EPOCHS, PATCH_SIZE, VAL_SPLIT, DEBUG_MODE, \
     APPLY_AUGMENTATIONS, OVERLAP_STEP, OUTPUT_DIR, \
     IMG_HEIGHT, IMG_WIDTH, CLASS_NAMES, CHANNELS, \
@@ -18,6 +18,8 @@ from config import BASE_PATH, BATCH_SIZE, NB_CLASSES, \
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+os.makedirs(BASE_PATH, exist_ok=True)
+os.makedirs(TEST_PATH, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Configure logging
